@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Ses Stres Analiz Platformu</string>
+    <string name="title_activity_main">Ses Stres Analiz Platformu</string>
+    <string name="package_name">com.stressvoice.sesstresanaliz</string>
+    <string name="custom_url_scheme">com.stressvoice.sesstresanaliz</string>
+</resources>
