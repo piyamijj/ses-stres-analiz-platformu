@@ -16,8 +16,42 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+
+    // Release signing is intentionally OPT-IN, never a hardcoded value or a committed
+    // keystore. .github/workflows/build-apk.yml already passes
+    // -Pandroid.injected.signing.store.file/.store.password/.key.alias/.key.password when the
+    // RELEASE_KEYSTORE_* repo secrets are configured, and falls back to assembleDebug when
+    // they're not — this block just gives AGP a signingConfig to actually attach those
+    // injected properties to.
+    //
+    // NOTE (root cause of the "release APK isn't really signed" gap): those
+    // "-Pandroid.injected.signing.*" CLI properties were already being passed by CI, but had
+    // no effect, because AGP only consults them for a signingConfig that is attached to the
+    // build type — there was no signingConfigs block in this file at all. So even with the
+    // secrets populated, `assembleRelease` would still emit an unsigned
+    // app-release-unsigned.apk (not installable on a real device), not a signed
+    // app-release.apk.
+    def gnInjStoreFile = project.findProperty('android.injected.signing.store.file')
+    if (gnInjStoreFile) {
+        signingConfigs {
+            release {
+                storeFile file(gnInjStoreFile)
+                storePassword project.findProperty('android.injected.signing.store.password')
+                keyAlias project.findProperty('android.injected.signing.key.alias')
+                keyPassword project.findProperty('android.injected.signing.key.password')
+                // This project's keystore is generated with OpenSSL as PKCS12 (not keytool /
+                // legacy JKS) — must be declared explicitly or AGP assumes JKS and fails to
+                // load it.
+                storeType 'PKCS12'
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (gnInjStoreFile) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
