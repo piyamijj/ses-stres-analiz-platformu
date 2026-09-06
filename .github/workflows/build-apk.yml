@@ -89,6 +89,24 @@ jobs:
           echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > android/app/release.keystore
           echo "has_keystore=true" >> "$GITHUB_OUTPUT"
 
+      # TEMPORARY DIAGNOSTIC STEP — remove once the "Failed to read key ... from store" signing
+      # failure is root-caused. openssl gives a concrete PKCS12 error (unlike Gradle's opaque
+      # wrapper), and printing both JDK versions lets us compare against whatever generated the
+      # keystore locally (PKCS12 PBE/MAC algorithm defaults changed across JDK versions).
+      - name: DEBUG - diagnose keystore readability
+        if: steps.keystore.outputs.has_keystore == 'true'
+        continue-on-error: true
+        env:
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+        run: |
+          echo "--- java -version (runner default) ---"
+          java -version
+          echo "--- JDK used by Gradle (android/gradlew -version) ---"
+          (cd android && ./gradlew -version) || true
+          echo "--- openssl pkcs12 -info on the decoded keystore ---"
+          openssl pkcs12 -info -in android/app/release.keystore -passin "pass:$RELEASE_KEYSTORE_PASSWORD" -noout
+          echo "openssl exit code: $?"
+
       - name: Build signed release APK
         if: steps.keystore.outputs.has_keystore == 'true'
         working-directory: android
