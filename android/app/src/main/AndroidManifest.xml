@@ -38,4 +38,13 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Required so the WebView's getUserMedia() audio capture request can actually be
+         granted. Capacitor's BridgeWebChromeClient.onPermissionRequest() already maps the
+         web "audio_capture" resource to RECORD_AUDIO/MODIFY_AUDIO_SETTINGS and drives the
+         runtime permission prompt for us — but Android silently denies any permission that
+         isn't declared here first, which is exactly why the in-app mic capture was always
+         failing with NotAllowedError even though a real device/emulator was used. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 </manifest>
