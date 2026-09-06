@@ -7,11 +7,13 @@
  *  - Capacitor (BUILD_TARGET=capacitor): statik dışa aktarım (`output: "export"`)
  *    yapılır; böylece uygulama, Android WebView içine Capacitor ile
  *    gömülebilecek statik HTML/JS/CSS paketine dönüşür. Statik dışa aktarım
- *    sunucu API rotalarını çalıştıramaz — bu yüzden AI çağrıları (Whisper,
- *    pitch/jitter/shimmer analizi vb.) öncelikle istemci tarafında
- *    (tarayıcıda) çalışacak şekilde tasarlanmalı; sunucu taraflı /api rotaları
- *    yalnızca Vercel derlemesinde var olan isteğe bağlı bir yedek katman
- *    olarak ele alınmalıdır.
+ *    sunucu API rotalarını (src/app/api/**) İÇEREMEZ — bu yüzden
+ *    `npm run build:capacitor`, ham `next build` yerine
+ *    scripts/build-capacitor.sh betiğini çalıştırır: bu betik src/app/api
+ *    dizinini derleme süresince geçici olarak kaldırıp sonra geri yükler.
+ *    Paketlenmiş Android uygulaması, Modül 03 transkripsiyonu için bu API'yi
+ *    yerelde değil, ağ üzerinden Vercel'de barındırılan paylaşılan backend'e
+ *    istek atarak kullanır (bkz. src/lib/config.ts, NEXT_PUBLIC_API_BASE_URL).
  *
  * Bu desen, kullanıcının piyamijj/Translater deposunda halihazırda çalışan
  * yapılandırmadan uyarlanmıştır.

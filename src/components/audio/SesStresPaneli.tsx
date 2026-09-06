@@ -3,6 +3,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSesYakalama } from '@/hooks/useSesYakalama';
 import { normalizeEt, hesaplaRMS, hesaplaPeak, dBFSDonustur } from '@/lib/audio/normalizasyon';
+import { kelimeAkustikOzellikleriCikar } from '@/lib/audio/akustikOzellikler';
+import { apiYolu } from '@/lib/config';
+import type { KelimeZamanDamgasi } from '@/lib/types';
 
 // Tasarım sözleşmesi renk token'ları (bkz. tailwind.config.ts)
 const CANLI_CIZIM_RENGI = '#E4E6EA'; // ink — canlı waveform çizgisi
@@ -14,6 +17,14 @@ interface NormalizasyonOzeti {
   girisRMS: number;
   girisPeak: number;
 }
+
+interface DecodedSesCiktisi {
+  kanalVerisi: Float32Array;
+  ornekleHizi: number;
+  toplamSureSaniye: number;
+}
+
+type TranskriptDurumu = 'boşta' | 'yukleniyor' | 'tamamlandi' | 'hata';
 
 /**
  * Ses Stres Paneli
@@ -50,8 +61,12 @@ export function SesStresPaneli() {
   const canliCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const normalizeCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const cizimKareRef = useRef<number | null>(null);
+  const decodedCiktiRef = useRef<DecodedSesCiktisi | null>(null);
 
   const [normalizasyonOzeti, setNormalizasyonOzeti] = useState<NormalizasyonOzeti | null>(null);
+  const [transkriptDurumu, setTranskriptDurumu] = useState<TranskriptDurumu>('boşta');
+  const [transkriptHata, setTranskriptHata] = useState<string | null>(null);
+  const [kelimeler, setKelimeler] = useState<KelimeZamanDamgasi[] | null>(null);
 
   // Efekt 1: Canlı waveform çizimi (gerçek zamanlı, filtrelenmiş sinyal üzerinden)
   useEffect(() => {
@@ -133,6 +148,14 @@ export function SesStresPaneli() {
 
         const kanalVerisi = decodedBuffer.getChannelData(0);
 
+        // Modül 03'ün kelime bazlı akustik analizinde yeniden kullanılmak üzere
+        // decode edilmiş ham örneklemi ve süre bilgisini sakla.
+        decodedCiktiRef.current = {
+          kanalVerisi,
+          ornekleHizi: decodedBuffer.sampleRate,
+          toplamSureSaniye: decodedBuffer.duration,
+        };
+
         const girisRMS = hesaplaRMS(kanalVerisi);
         const girisPeak = hesaplaPeak(kanalVerisi);
         const sonuc = normalizeEt(kanalVerisi, 0.2);
@@ -195,6 +218,126 @@ export function SesStresPaneli() {
       iptalEdildi = true;
     };
   }, [kayitDurumu, kayitliBlob]);
+
+  // Efekt 3: Kayıt tamamlandığında transkripti (kelime bazlı zaman damgalarıyla)
+  // /api/transkript uç noktasından al, ardından her kelime aralığı için yerel
+  // olarak decode edilmiş ses tamponu üzerinden akustik stres skorunu hesapla.
+  useEffect(() => {
+    if (kayitDurumu !== 'tamamlandi' || !kayitliBlob) return;
+
+    let iptalEdildi = false;
+
+    (async () => {
+      setTranskriptDurumu('yukleniyor');
+      setTranskriptHata(null);
+      setKelimeler(null);
+
+      try {
+        const formData = new FormData();
+        formData.append('ses', kayitliBlob, 'kayit.webm');
+
+        const yanit = await fetch(apiYolu('/api/transkript'), {
+          method: 'POST',
+          body: formData,
+        });
+
+        const veri = await yanit.json();
+
+        if (iptalEdildi) return;
+
+        if (!yanit.ok) {
+          throw new Error(veri?.hata || `Transkript alınamadı (HTTP ${yanit.status}).`);
+        }
+
+        const decodedCikti = decodedCiktiRef.current;
+        const gelenKelimeler: Array<{ kelime: string; baslangicSaniye: number; bitisSaniye: number }> =
+          veri.kelimeler || [];
+
+        if (!decodedCikti || gelenKelimeler.length === 0) {
+          setKelimeler([]);
+          setTranskriptDurumu('tamamlandi');
+          return;
+        }
+
+        const { kanalVerisi, ornekleHizi } = decodedCikti;
+        let oncekiPitch: number | null = null;
+
+        const sonuclar: KelimeZamanDamgasi[] = gelenKelimeler.map((k) => {
+          const baslangicIndeksi = Math.max(0, Math.floor(k.baslangicSaniye * ornekleHizi));
+          const bitisIndeksi = Math.min(kanalVerisi.length, Math.ceil(k.bitisSaniye * ornekleHizi));
+          const kelimeOrnekleri =
+            bitisIndeksi > baslangicIndeksi
+              ? kanalVerisi.subarray(baslangicIndeksi, bitisIndeksi)
+              : new Float32Array(0);
+
+          const akustik = kelimeAkustikOzellikleriCikar({
+            ornekler: kelimeOrnekleri,
+            ornekleHizi,
+            oncekiKelimeOrtalamaPitchHz: oncekiPitch,
+          });
+
+          if (akustik.pitchHz !== null) {
+            oncekiPitch = akustik.pitchHz;
+          }
+
+          return {
+            kelime: k.kelime,
+            baslangicSaniye: k.baslangicSaniye,
+            bitisSaniye: k.bitisSaniye,
+            stresSkoru: akustik.stresSkoru,
+            akustikOzellikler: {
+              ortalamaPitchHz: akustik.pitchHz ?? undefined,
+              jitter: akustik.jitterYuzde,
+              shimmer: akustik.shimmerYuzde,
+              tempoDegisimi: akustik.pitchSapmasiHz ?? undefined,
+            },
+          };
+        });
+
+        setKelimeler(sonuclar);
+        setTranskriptDurumu('tamamlandi');
+      } catch (hata) {
+        if (iptalEdildi) return;
+        console.error('[SesStresPaneli] Transkript hatası:', hata);
+        setTranskriptHata(
+          hata instanceof Error
+            ? hata.message
+            : 'Transkript alınırken bilinmeyen bir hata oluştu.'
+        );
+        setTranskriptDurumu('hata');
+      }
+    })();
+
+    return () => {
+      iptalEdildi = true;
+    };
+  }, [kayitDurumu, kayitliBlob]);
+
+  // Efekt 4: Stresli kelimeler tespit edildiğinde, normalize edilmiş waveform
+  // üzerine zaman aralıklarına karşılık gelen renkli (kırmızı/turuncu) vurgu
+  // katmanları çizer — AI attention mekanizmasının görsel karşılığı.
+  useEffect(() => {
+    if (!kelimeler || kelimeler.length === 0) return;
+    const decodedCikti = decodedCiktiRef.current;
+    const canvas = normalizeCanvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (!decodedCikti || !canvas || !ctx || decodedCikti.toplamSureSaniye <= 0) return;
+
+    const genislik = canvas.width;
+    const yukseklik = canvas.height;
+
+    for (const kelime of kelimeler) {
+      const skor = kelime.stresSkoru ?? 0;
+      if (skor < 40) continue; // düşük stresli kelimeler vurgulanmaz
+
+      const x1 = (kelime.baslangicSaniye / decodedCikti.toplamSureSaniye) * genislik;
+      const x2 = (kelime.bitisSaniye / decodedCikti.toplamSureSaniye) * genislik;
+      const alfa = Math.min(0.55, 0.15 + (skor / 100) * 0.4);
+
+      ctx.fillStyle = skor >= 70 ? `rgba(239, 68, 68, ${alfa})` : `rgba(255, 138, 61, ${alfa})`;
+      ctx.fillRect(x1, 0, Math.max(1, x2 - x1), yukseklik);
+    }
+  }, [kelimeler]);
 
   const rmsDBGoster = Number.isFinite(canliMetrikler.rmsDB)
     ? `${canliMetrikler.rmsDB.toFixed(1)} dBFS`
@@ -302,10 +445,63 @@ export function SesStresPaneli() {
         </div>
       )}
 
-      <div className="border border-dashed border-muted/30 px-3 py-2 text-xs text-muted">
-        Modül 03 (kelime bazlı stres tespiti) bu bileşenin transkript panelini besleyecek
-        şekilde hazırlanıyor — bkz. <code className="font-veri">src/lib/types.ts</code>.
-      </div>
+      {tamamlandiMi ? (
+        <div className="grid gap-1">
+          <div className="flex items-center justify-between">
+            <span className="text-xs uppercase tracking-wide text-muted">
+              Modül 03 — Transkript &amp; Kelime Bazlı Stres Tespiti
+            </span>
+            {transkriptDurumu === 'yukleniyor' && (
+              <span className="font-veri text-xs text-accent">İşleniyor…</span>
+            )}
+          </div>
+
+          {transkriptHata && (
+            <div className="border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+              {transkriptHata}
+            </div>
+          )}
+
+          {kelimeler && kelimeler.length > 0 && (
+            <>
+              <p className="border border-muted/20 bg-canvas px-3 py-3 text-base leading-loose text-ink">
+                {kelimeler.map((kelime, indeks) => {
+                  const skor = kelime.stresSkoru ?? 0;
+                  const renkSinifi =
+                    skor >= 70 ? 'text-red-400' : skor >= 40 ? 'text-accent' : 'text-ink';
+                  return (
+                    <span
+                      key={`${kelime.kelime}-${indeks}`}
+                      className={`group relative mr-1 inline-block cursor-default ${renkSinifi}`}
+                    >
+                      {kelime.kelime}
+                      <span className="pointer-events-none absolute -top-9 left-1/2 z-10 hidden -translate-x-1/2 whitespace-nowrap border border-muted/30 bg-panel px-2 py-1 font-veri text-xs text-ink group-hover:block">
+                        Stres Seviyesi: %{skor}
+                      </span>
+                    </span>
+                  );
+                })}
+              </p>
+              <p className="font-veri text-xs text-muted">
+                Kırmızı: yüksek stres (≥%70) · Amber: orta stres (≥%40) · renksiz: düşük stres.
+                Skor; jitter, shimmer, kelimeler arası perde (pitch) sapması ve ses şiddeti
+                (RMS) birleşiminden türetilen bir sezgisel (heuristic) tahmindir.
+              </p>
+            </>
+          )}
+
+          {kelimeler && kelimeler.length === 0 && transkriptDurumu === 'tamamlandi' && (
+            <p className="text-xs text-muted">
+              Kayıtta tanınabilir bir kelime bulunamadı.
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="border border-dashed border-muted/30 px-3 py-2 text-xs text-muted">
+          Modül 03 (kelime bazlı stres tespiti) kayıt tamamlandığında otomatik olarak
+          çalışacaktır — bkz. <code className="font-veri">src/lib/types.ts</code>.
+        </div>
+      )}
     </section>
   );
 }

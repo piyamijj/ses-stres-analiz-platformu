@@ -6,11 +6,11 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "build:capacitor": "cross-env BUILD_TARGET=capacitor next build",
+    "build:capacitor": "cross-env NEXT_PUBLIC_API_BASE_URL=https://ses-stres-analiz-platformu.vercel.app bash scripts/build-capacitor.sh",
     "start": "next start",
     "lint": "next lint",
     "cap:add:android": "cap add android",
-    "cap:sync": "cross-env BUILD_TARGET=capacitor next build && cap sync android",
+    "cap:sync": "npm run build:capacitor && cap sync android",
     "cap:open:android": "cap open android"
   },
   "dependencies": {
@@ -24,7 +24,6 @@
     "clsx": "^2.1.1",
     "lucide-react": "^0.446.0",
     "next": "^14.2.13",
-    "openai": "^4.68.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tailwind-merge": "^2.5.2",
